@@ -29,14 +29,14 @@ from tqdm import tqdm_notebook as tqdm
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import seaborn as sns
-sns.color_palette("bright")
+# import seaborn as sns
+# sns.color_palette("bright")
 import matplotlib as mpl
 import matplotlib.cm as cm
 
 from functools import reduce
 from IE_source import kernels, integrators 
-from utils import to_np
+from IE_source.utils import to_np
 import random
 
 import torch

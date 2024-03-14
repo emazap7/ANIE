@@ -38,8 +38,8 @@ from tqdm.notebook import tqdm
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import seaborn as sns
-sns.color_palette("bright")
+# import seaborn as sns
+# sns.color_palette("bright")
 import matplotlib as mpl
 import matplotlib.cm as cm
 

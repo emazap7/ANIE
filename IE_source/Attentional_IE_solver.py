@@ -29,14 +29,14 @@ from tqdm import tqdm_notebook as tqdm
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-import seaborn as sns
-sns.color_palette("bright")
+# import seaborn as sns
+# sns.color_palette("bright")
 import matplotlib as mpl
 import matplotlib.cm as cm
 
 from functools import reduce
 from IE_source import kernels, integrators 
-from utils import to_np
+from IE_source.utils import to_np
 import random
 
 import torch
@@ -478,7 +478,341 @@ class Integral_attention_solver_multbatch:
         
         return sol
 
-      
+class Integral_attention_solver:
+    
+    def __init__(
+        self,
+        x: torch.Tensor,
+        y_0: Union[float, np.float64, complex, np.complex128, np.ndarray, list,torch.Tensor,torch.tensor],
+        c: Optional[Callable] = None,
+        d: Optional[Callable] = None,
+        Encoder:Optional[Callable] = None,
+        lower_bound: Optional[Callable] = None,
+        upper_bound: Optional[Callable] = None,
+        mask: Optional[Callable] = None,
+        sampling_points: int = 100,
+        use_support: bool=True,
+        n_support_points = 100,
+        support_tensors: Optional[Callable] = None,
+        global_error_tolerance: float = 1e-6,
+        max_iterations: Optional[int] = None,
+        int_atol: float = 1e-5,
+        int_rtol: float = 1e-5,
+        smoothing_factor: float = 0.5,
+        store_intermediate_y: bool = False,
+        global_error_function: Callable = global_error,
+        output_support_tensors=False,
+        return_function=False
+    ):
+        
+        
+        self.y_0 = y_0.to(device)
+        
+        self.x = x.to(device)
+        
+        self.samp = sampling_points
+        
+        self.use_support=use_support
+        
+        self.output_support_tensors=output_support_tensors
+        
+                
+        self.dim = self.y_0.size(-1)
+        
+        
+        if use_support is False:
+            self.support_tensors=x.to(device)
+        
+        elif support_tensors is None:
+            self.support_tensors=torch.sort(torch.rand(sampling_points))[0]*(x[-1]-x[0])+x[0]
+                
+        else:
+            self.support_tensors=support_tensors.to(device)
+            
+        self.return_function=return_function
+
+        if c is None:
+            c = lambda x: self.y_0.repeat(self.support_tensors.size(0),1).to(device)
+        if d is None:
+            d = lambda x: torch.Tensor([1]).to(device)
+            
+            
+        self.c = lambda x: c(x)
+        self.d = lambda x: d(x)
+        
+        
+        if lower_bound is not None:
+            self.lower_bound = lower_bound
+        if upper_bound is not None:
+            self.upper_bound = upper_bound
+        
+        
+        #self.I_func = interval_function(self.lower_bound,self.upper_bound,self.x)
+        
+        if lower_bound is not None and upper_bound is not None:
+            self.masking_map =  masking_function(self.lower_bound,self.upper_bound,n_batch=1)
+            mask_times = torch.sort(torch.rand(self.samp))[0].to(device)*(self.x[-1]-self.x[0]) + self.x[0]
+            self.mask = self.masking_map.create_mask(mask_times)
+        else:
+            self.mask=None #This is a Fredholm IE
+            
+        if mask is not None:
+            self.mask = mask
+        
+           
+        self.Encoder = Encoder.to(device)
+        
+        
+        if global_error_tolerance == 0 and max_iterations is None:
+            raise exceptions.InvalidParameter(
+                "global_error_tolerance cannot be 0 if max_iterations is None"
+            )
+        if global_error_tolerance < 0:
+            raise exceptions.InvalidParameter("global_error_tolerance cannot be negative")
+        self.global_error_tolerance = global_error_tolerance
+        self.global_error_function = global_error_function
+        
+        
+        #self.interpolation_kind = interpolation_kind
+
+        if not 0 < smoothing_factor < 1:
+            raise exceptions.InvalidParameter("Smoothing factor must be between 0 and 1")
+        self.smoothing_factor = smoothing_factor
+
+        
+        
+        if max_iterations is not None and max_iterations <= 0:
+            raise exceptions.InvalidParameter("If given, max iterations must be greater than 0")
+        
+        
+        self.max_iterations = max_iterations
+
+
+        self.int_atol = int_atol
+        self.int_rtol = int_rtol
+
+        self.store_intermediate = store_intermediate_y
+        if self.store_intermediate:
+            self.y_intermediate = []
+
+        self.iteration = None
+        self.y = None
+        self.global_error = None
+        
+    def _zeros(self) -> torch.Tensor:
+        return torch.zeros_like(self.y_0)    
+    
+    
+    
+    def solve(self, callback: Optional[Callable] = None) -> torch.Tensor:
+            
+        with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                    action="error",
+                    message="Casting complex values",
+                    category=np.ComplexWarning,
+                    )
+            
+            
+            #try:
+                    y_current = self._initial_y()
+                    y_guess = self._solve_rhs_with_known_y(y_current) 
+                    
+                    error_current = self._global_error(y_current, y_guess)
+                    
+                    #if self.store_intermediate:
+                    #    self.y_intermediate.append(y_current)
+
+                    self.iteration = 0
+
+                    logger.debug(
+                        f"Advanced to iteration {self.iteration}. Current error: {error_current}."
+                    )
+                    
+                    if callback is not None:
+                        logger.debug(f"Calling {callback} after iteration {self.iteration}")
+                        callback(self, y_guess, error_current)
+
+                    while error_current > self.global_error_tolerance:
+                        
+                        new_current = self._next_y(y_current, y_guess)
+                        new_guess = self._solve_rhs_with_known_y(new_current)
+                        new_error = self._global_error(new_current, new_guess)
+                        if new_error > error_current:
+                            warnings.warn(
+                                f"Error increased on iteration {self.iteration}",
+                                #exceptions.IDEConvergenceWarning,
+                            )
+
+                        y_current, y_guess, error_current = (
+                            new_current,
+                            new_guess,
+                            new_error,
+                            )
+
+                        if self.store_intermediate:
+                            self.y_intermediate.append(y_current)
+
+                        self.iteration += 1
+                        
+
+                        logger.debug(
+                        f"Advanced to iteration {self.iteration}. Current error: {error_current}."
+                        )
+
+                        if callback is not None:
+                            logger.debug(f"Calling {callback} after iteration {self.iteration}")
+                            callback(self, y_guess, error_current)
+
+                        if self.max_iterations is not None and self.iteration >= self.max_iterations:
+                        #    warnings.warn(
+                        #        exceptions.IDEConvergenceWarning(
+                        #            f"Used maximum number of iterations ({self.max_iterations}), but only got to global error {error_current} (target {self.global_error_tolerance})"
+                        #        )
+                        #    )
+                        
+                        
+                            break
+            
+            
+            #except (np.ComplexWarning, TypeError) as e:
+             #     print("There has been an error")
+
+        
+        self.y = y_guess
+        self.global_error = error_current
+        
+        if self.output_support_tensors is False or self.return_function is True:
+            interpolated_y = self._interpolate_y(self.y)
+            self.y = interpolated_y(self.x)
+                  
+        if self.return_function is True:
+
+            return interpolated_y
+        
+        else:
+            
+            del interpolated_y
+            
+            return self.y
+    
+    
+    def _initial_y(self) -> torch.Tensor:
+        """Calculate the initial guess for `y`, by considering only `c` on the right-hand side of the IDE."""
+        y_initial = self.c(self.support_tensors.unsqueeze(1)) 
+        
+        return y_initial
+
+    
+    
+    
+    def _next_y(self, curr: torch.Tensor, guess: torch.Tensor) -> torch.Tensor:
+        """Calculate the next guess at the solution by merging two guesses."""
+        return (self.smoothing_factor * curr) + ((1 - self.smoothing_factor) * guess)
+
+    
+    
+    
+    def _global_error(self, y1: torch.Tensor, y2: torch.Tensor) -> float:
+        """
+        Return the global error estimate between `y1` and `y2`.
+        Parameters
+        ----------
+        y1
+            A guess of the solution.
+        y2
+            Another guess of the solution.
+        Returns
+        -------
+        error : :class:`float`
+            The global error estimate between `y1` and `y2`.
+        """
+        return self.global_error_function(y1, y2)
+
+    
+    
+    
+    def _solve_rhs_with_known_y(self, y: torch.Tensor) -> torch.Tensor:
+        """Solves the right-hand-side of the IDE as if :math:`y` was `y`."""
+        interpolated_y = self._interpolate_y(y)
+        
+        def integral(x):
+            
+            
+            #glob_time = torch.cat([self.x[i].repeat(1,self.samp,1) for i in range(self.x.size(0))]).to(device)
+            
+            ##loc_time = torch.cat([torch.sort(torch.rand(1,self.samp,1),1)[0].to(device)*(self.upper_bound(self.x[i])-self.lower_bound(self.x[i])) + self.lower_bound(self.x[i]) for i in range(self.x.size(0))]).to(device)
+            loc_time= torch.sort(torch.rand(1,self.samp,1),1)[0].to(device)*(self.x[-1]-self.x[0]) + self.x[0]
+            y_in = interpolated_y(loc_time).squeeze(2)
+            
+            y_in = torch.cat([y_in,loc_time],-1)
+            
+            model = self.Encoder
+            
+            y_in = y_in.detach().requires_grad_(True)
+            
+            T = model.forward(y_in,dynamical_mask=self.mask)
+            ##z = T[T.size(0)-1,T.size(1)-1,:self.y_0.size(1)]
+            #z = T[T.size(0)-1,0,:self.y_0.size(1)]
+            
+            z = T[:,:,:]
+            
+            
+            z = z + y_in[:,:,:]
+
+            
+            z = z[0,:,:self.dim]
+
+            del y_in
+            del loc_time
+            #del interpolated_y
+               
+            return z
+            
+
+        def rhs(x):
+            
+            return self.c(x.squeeze(0)) + (self.d(x)*integral(x))
+
+        return self.solve_IE(rhs)
+
+    
+    
+    def _interpolate_y(self, y: torch.Tensor):# -> torch.Tensor: #inter.interp1d:
+        """
+        Interpolate `y` along `x`, using `interpolation_kind`.
+        Parameters
+        ----------
+        y : :class:`numpy.ndarray`
+            The y values to interpolate (probably a guess at the solution).
+        Returns
+        -------
+        interpolator : :class:`scipy.interpolate.interp1d`
+            The interpolator function.
+        """
+        x=self.support_tensors
+        y = y
+        coeffs = natural_cubic_spline_coeffs(x, y)
+        interpolation = NaturalCubicSpline(coeffs)
+        
+        def output(point:torch.Tensor):
+            return interpolation.evaluate(point)
+        
+        return output
+    
+    def solve_IE(self, rhs: Callable) -> torch.Tensor:
+        
+        func = rhs 
+        
+        #sol = torch.cat([func(torch.Tensor([self.x[i]])).unsqueeze(0) for i in range(1,self.x.size(0))],-2).squeeze(0)
+        #sol = torch.cat([self.y_0,sol],-2)
+        
+        times = self.support_tensors
+        
+        sol = rhs(times)
+        
+        return sol
+
 
 class Integral_spatial_attention_solver_multbatch:
     

@@ -26,7 +26,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn import MultiheadAttention, TransformerEncoderLayer
 from torch.nn.init import constant_, xavier_uniform_
-from torchinfo import summary
+# from torchinfo import summary
 
 
 ADDITIONAL_ATTR = ['normalizer', 'raw_laplacian', 'return_latent',

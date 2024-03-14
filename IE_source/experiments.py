@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 import scipy
 from sklearn.metrics import mean_squared_error
 from sklearn.decomposition import PCA
@@ -15,12 +15,12 @@ from torchcubicspline import(natural_cubic_spline_coeffs,
                              NaturalCubicSpline)
 
 #Custom libraries
-from utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, Integral_part, LRScheduler, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset
+from IE_source.utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, Integral_part, LRScheduler, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset, fun_interpolation
 from torch.utils.data import SubsetRandomSampler
 from IE_source.solver import IESolver_monoidal
-from IE_source.Attentional_IE_solver import Integral_attention_solver, Integral_spatial_attention_solver, Integral_spatial_attention_solver_multbatch
+from IE_source.Attentional_IE_solver import Integral_attention_solver, Integral_attention_solver_multbatch, Integral_spatial_attention_solver_multbatch #, Integral_spatial_attention_solver
 from IE_source.kernels import RunningAverageMeter, log_normal_pdf, normal_kl
-from utils import plot_reconstruction
+from IE_source.utils import plot_reconstruction
 
 #Torch libraries
 import torch
@@ -6525,7 +6525,934 @@ def Full_experiment_AttentionalIE_PDE_Navier_Stokes(model, Encoder, Decoder, Dat
             print("Average loss: ",test_loss*args.n_batch/obs.shape[0])
             
 
+def Full_experiment_AttentionalIE_GeneratedFMRI(model, Data, dataloaders, time_seq, index_np, mask, times, args, extrapolation_points): # experiment_name, plot_freq=1):
+    verbose=False
+    
+    #metadata for saving checkpoints
+    if args.model=='nie': 
+        str_model_name = "nie"
+    elif args.model=='node': 
+        str_model_name = "node"
+    
+    str_model = f"{str_model_name}"
+    str_log_dir = args.root_path
+    path_to_experiment = os.path.join(str_log_dir,str_model_name, args.experiment_name)
+    print('path_to_experiment: ',path_to_experiment)
+
+    if args.mode=='train':
+        if not os.path.exists(path_to_experiment):
+            os.makedirs(path_to_experiment)
+
+        
+        if verbose: print('path_to_experiment: ',path_to_experiment)
+        txt = os.listdir(path_to_experiment)
+        txt = [x for x in txt if not x.startswith('@$\t') and not x.startswith('eval_')]
+        if len(txt) == 0:
+            num_experiments=0
+        else: 
+            num_experiments = [int(i[3:]) for i in txt]
+            num_experiments = np.array(num_experiments).max()
+        #  # -- logger location
+        # writer = SummaryWriter(os.path.join(path_to_experiment,'run'+str(num_experiments+1)))
+        # print('writer.log_dir: ',writer.log_dir)
+        
+        path_to_save_plots = os.path.join(path_to_experiment,'run'+str(num_experiments+1),'plots')
+        path_to_save_models = os.path.join(path_to_experiment,'run'+str(num_experiments+1),'model')
+        if not os.path.exists(path_to_save_plots):
+            os.makedirs(path_to_save_plots)
+        if not os.path.exists(path_to_save_models):
+            os.makedirs(path_to_save_models)
+            
+        # with open(os.path.join(writer.log_dir,'commandline_args.txt'), 'w') as f:
+        #     for key, value in args.__dict__.items(): 
+        #         f.write('%s:%s\n' % (key, value))
+
+
+    times = time_seq
+    if verbose: print('times.shape: ',times.shape)
+    
+    All_parameters = model.parameters()
+    
+    
+    optimizer = torch.optim.Adam(All_parameters, lr=args.lr, weight_decay=args.weight_decay)
+
+    if args.lr_scheduler == 'ReduceLROnPlateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=args.plat_patience, min_lr=args.min_lr, factor=args.factor)
+    elif args.lr_scheduler == 'CosineAnnealingLR':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.T_max, eta_min=args.min_lr,last_epoch=-1)
+
+    # optimizer = torch.optim.Adam(model.parameters(), args.lr, weight_decay=args.weight_decay)
+    if args.resume_from_checkpoint is not None:
+        path = os.path.join(args.root_path,args.model,args.experiment_name,args.resume_from_checkpoint,'model')
+        model, optimizer, scheduler, kernel, F_func, f_func = load_checkpoint(path, model, optimizer, scheduler, None, None,  None)
+
+
+    
+    if args.mode=='train':
+        #lr_scheduler = LRScheduler(optimizer,patience = 50,min_lr=1e-5,factor=0.1)
+        early_stopping = EarlyStopping(patience=1000,min_delta=0)
+
+        # Loss_print = []
+        # Val_Loss = []
+        all_train_loss=[]
+        all_val_loss=[]
+
+        save_best_model = SaveBestModel()
+        # save_last_model = SaveLastState()
+        start = time.time()
+        
+        minibatch_train_counter=0
+        minibatch_val_counter=0
+        for epoch in range(args.epochs):
+            
+            model.train()
+            
+            start_i = time.time()
+            print('Epoch:',epoch)
+            counter=0
+            train_loss = 0.0
+
+            for obs_, ts_, ids_, frames_to_drop_train in tqdm(dataloaders['train']): 
+        
+                if verbose: 
+                    print('[first] obs_.shape: ',obs_.shape)
+                    print('[first] ids_.shape: ',ids_.shape)
+                    print('[first] ts_.shape: ',ts_.shape)
+                    print('[first] ts_: ',ts_)
+                
+                # obs_, ts_, ids_ = next(iter(train_loader))
+                ids_, indices = torch.sort(ids_)
+                # if verbose: print('indices: ',indices)
+                obs_ = obs_[:,indices[0,:]]
+                # obs_ = torch.cat([obs[j,0,:],obs_]) # To ensure the first point is always there.
+                ts_ = ts_[:,indices[0,:]]
+
+                if args.support_tensors is True or args.support_test is True:
+                    if args.combine_points is True:
+                        # dummy_times = torch.linspace(times[0],times[-1],args.sampling_points).float()
+                        #Add in-between frames
+                        dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_.squeeze()[0], ts_.squeeze()[-1]))
+                        dummy_times,_ = torch.sort(torch.cat((ts_.squeeze().cpu(),dummy_times))) # append the in-between and sort
+
+                        #Check if there are duplicates and resample if there are
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(dummy_times, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                print('[sampling_full_frames] There are duplicated time coordinates: ',dup)
+                                print('Resampling')
+
+                                 #Add in-between frames
+                                dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_.squeeze()[0], ts_.squeeze()[-1]))
+                                dummy_times,_ = torch.sort(torch.cat((ts_.squeeze().cpu(),dummy_times))) # append the in-between and sort
+                        real_idx = np.argwhere(np.isin(dummy_times,ts_.squeeze().cpu(),invert=False)).flatten() #returns the indexes of the dummy frames. So dummy_idxs and 
+                        if verbose: 
+                            print('real_idx: ',real_idx)
+                            print('dummy_times: ',dummy_times)
+                    else:
+                        # dummy_times = torch.linspace(times[0],times[-1],args.sampling_points).float()
+                        #Add in-between frames
+                        dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_.squeeze()[0], ts_.squeeze()[-1]))
                         
+                        #Check if there are duplicates and resample if there are
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(dummy_times, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                print('There are duplicated time coordinates: ',dup)
+                                print('Resampling')
+
+                                 #Add in-between frames
+                                dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_.squeeze()[0], ts_.squeeze()[-1]))
+
+                    if verbose: 
+                    #     print('dummy_times.type(): ',dummy_times.type())
+                        print('dummy_times.shape: ',dummy_times.shape)
+                
+                obs_ = obs_.to(args.device)
+                ts_ = ts_.to(args.device)
+                ids_ = ids_.to(args.device)
+
+                del indices, ids_
+
+                if args.random_sample_n_points is not None:
+                    idx_downsampled_points = np.random.choice(np.arange(1,len(ts_[0,:])), args.random_sample_n_points, replace=False)
+                    idx_downsampled_points = np.sort(np.insert(idx_downsampled_points, 0, 0))
+                    # # print('idx_downsampled_points.shape: ',idx_downsampled_points.shape)
+                    # idx_downsampled_points = np.arange(0,21,step=5)-1
+                    # idx_downsampled_points[0]=0
+                    obs_=obs_[:,idx_downsampled_points,:]
+                    ts_=ts_[:,idx_downsampled_points]
+                
+                if args.perturbation_to_obs:
+                    # print('adding perturbation: ')
+                    perturb = torch.normal(mean=torch.zeros_like(obs_).to(args.device),
+                                              std=args.std_noise)#args.perturbation_to_obs0*obs_[:3,:].std(dim=0))
+                    # print('perturb.shape: ',perturb.shape)
+                else: perturb=None
+
+                # Drop frames if specified
+                if args.randomly_drop_n_last_frames is not None or args.drop_n_last_frames is not None:
+                    frames_to_drop = frames_to_drop_train.numpy()[0]
+                    if verbose: print('frames_to_drop: ',frames_to_drop)
+                    obs_cropped = obs_[:,:frames_to_drop,:]
+                    ts_cropped = ts_[:,:frames_to_drop]
+                    if verbose: print('obs_cropped.shape: {}, ts_cropped.shape: {}'.format(obs_cropped.shape, ts_cropped.shape))
+                else: frames_to_drop=None
+
+                if args.support_tensors is True or args.support_test is True:
+                    if verbose: print('[in epxeriments.py] dummy_times[:10]: ',dummy_times[:10])
+
+                model = model.float()
+                
+                if args.integral_c is not None: # To pass a C
+                    if args.integral_c == 'cte_2nd_half': # In this case, all points of the first half are used. So no need for downsample
+                        interpolation = fun_interpolation(obs_.to(args.device),ts_.squeeze().to(args.device),verbose=False, given_points = args.num_points_for_c) #Original 
+                        c = lambda x: interpolation.cte_2nd_half(x, noise=perturb, c_scaling_factor=args.c_scaling_factor).to(args.device) #I am giving x, but it is not actually used
+                    else:
+                        downsample_idx = np.sort(np.random.choice(ts_.shape[1], args.num_points_for_c, replace=False))
+                        downsample_idx = np.insert(downsample_idx, 0, 0)
+                        downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_.shape[1]-1)
+                        if verbose: print('downsample_idx: ',downsample_idx)
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(downsample_idx, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                downsample_idx = np.sort(np.random.choice(ts_.shape[1], args.num_points_for_c, replace=False))
+                                downsample_idx = np.insert(downsample_idx, 0, 0)
+                                downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_.shape[1]-1)
+
+                        # if verbose: print('downsample_idx: ',downsample_idx)
+
+                        t_downsample = ts_[0, downsample_idx]
+                        # if verbose:
+                        #     print('ts_: ',ts_)
+                        #     print('downsample_idx: ',downsample_idx)
+                        #     print('t_downsample: ',t_downsample)
+                        obs_downsampled = obs_[:,downsample_idx,:]
+                        if verbose:
+                            print('ts_: ',ts_)
+                            print('downsample_idx: ',downsample_idx)
+                            print('t_downsample.shape: ',t_downsample.shape)
+                            print('t_downsample: ',t_downsample)
+                            print('obs_downsampled.shape: ',obs_downsampled.shape)
+
+                        # interpolation = fun_interpolation(obs_downsampled.squeeze().to(args.device),t_downsample.squeeze().to(args.device),verbose=True) #Original 
+                        interpolation = fun_interpolation(obs_downsampled.to(args.device),t_downsample.squeeze().to(args.device),verbose=False) #Original 
+                        if args.integral_c == 'spline': # To pass a C as cubic spline
+                            c = lambda x: interpolation.spline_interpolation(x).squeeze()
+                        elif args.integral_c == 'linear': # 
+                            c = lambda x: interpolation.linear_interpolation(x).to(args.device)
+                        elif args.integral_c == 'step': # 
+                            c = lambda x: interpolation.step_interpolation(x).to(args.device)
+                        
+                elif args.integral_c is None:
+                    c=None
+                
+                if args.support_tensors is False:
+                    if verbose: print('using Integral_attention_solver_multbatch')
+                    z_ = Integral_attention_solver_multbatch(
+                            # ts_.to(device),
+                            ts_[0].squeeze().to(device), # Because it has to be a 1D vector
+                            obs_[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                            c=c,
+                            sampling_points = ts_[0].squeeze().size(0),
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            smoothing_factor=args.smoothing_factor,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            use_support=args.use_support,
+                            ).solve()
+                else:
+                    z_ = Integral_attention_solver_multbatch(
+                            # ts_.to(device),
+                            # obs_[0].unsqueeze(0).to(args.device),
+                            ts_[0].squeeze().to(device), # Because it has to be a 1D vector
+                            obs_[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                            c=c,
+                            # sampling_points = dummy_times.size(0),
+                            sampling_points = dummy_times.squeeze().size(0),
+                            support_tensors=dummy_times.squeeze().to(args.device),
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            smoothing_factor=args.smoothing_factor,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            output_support_tensors=args.use_support,
+                            ).solve()
+                    if args.combine_points is True:
+                        z_ = z_[:,real_idx,:]
+            
+                
+                # #loss_ts_ = get_times.select_times(ts_)[1]
+                # if args.randomly_drop_n_last_frames is not None:
+                #     frames_to_drop = frames_to_drop_train.numpy()[0]
+                # else: frames_to_drop=None
+                
+                if len(z_.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                    z_ = z_[None,:]
+                    if args.combine_points is True:
+                            z_clone =  z_clone[None,:] 
+                if verbose: 
+                    print('[before loss] z_: ',z_)
+                    print('[before loss] z_.shape: ',z_.shape)
+                    
+                if args.compute_loss_on_unseen_points:
+                    all_points = np.arange(ts_.shape[1])
+                    unseen_points = np.argwhere(np.isin(all_points,downsample_idx,invert=True)).flatten() #returns the indexes of the dummy frames. So dummy_idxs and 
+                    all_points = all_points[unseen_points]
+                    if verbose: 
+                        print('\nselecting unseen points: ')
+                        print('downsample_idx: ',downsample_idx)
+                        print('np.arange(ts_.shape[1]): ',np.arange(ts_.shape[1]))
+                        print('unseen_points: ',unseen_points)
+                        print('all_points: ',all_points)
+                    z_unseen = z_[:,unseen_points,:]
+                    obs_unseen = obs_[:,unseen_points,:]
+                    loss = F.mse_loss(z_unseen, obs_unseen.detach()) #Original 
+                else: 
+                    loss = F.mse_loss(z_, obs_.detach()) #Original 
+                # print('z_[:,:].to(args.device): ',z_[:,:].to(args.device))
+                # print('obs_.to(args.device).detach()[:,:]: ',obs_.to(args.device).detach()[:,:])
+                # loss = F.mse_loss(z_[:,:].to(args.device), obs_.to(args.device).detach()[:,:]) #Original 
+
+
+                optimizer.zero_grad()
+                loss.backward(retain_graph=True)
+                # loss.backward()
+                optimizer.step()
+
+                # n_iter += 1
+                counter += 1
+                minibatch_train_counter+=1
+                train_loss += loss.item()
+                del loss
+                
+                # if args.log_per_minibatch and minibatch_train_counter%args.num_minibatches==0:
+                #     tmp_loss = train_loss / counter
+                #     writer.add_scalar('Minibatch/train_loss', tmp_loss, global_step=minibatch_train_counter)
+
+            train_loss /= counter
+            all_train_loss.append(train_loss)
+            del train_loss
+            
+            if epoch>args.warm_up and args.lr_scheduler == 'CosineAnnealingLR':
+                scheduler.step()
+            # if args.validation_split==0:
+            #     scheduler.step(train_loss)
+            
+            if epoch % args.plot_freq == 0:
+                model.eval()
+                with torch.no_grad():
+                    z_ = Integral_attention_solver_multbatch(
+                            # ts_.to(device),
+                            ts_[0].squeeze().to(device), # Because it has to be a 1D vector
+                            obs_[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                            c=c,
+                            sampling_points = ts_[0].squeeze().size(0),
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            smoothing_factor=args.smoothing_factor,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            use_support=args.use_support,
+                            ).solve()
+
+                    obs_to_print = to_np(obs_)
+                    time_to_print = to_np(ts_)
+                    z_to_print = to_np(z_)
+                    if args.support_tensors is True or args.support_test is True:
+                        z_all_to_print = to_np(z_clone)
+                        dummy_times_to_print = to_np(dummy_times)
+                        if verbose: print('dummy_times_to_print.shape: ',dummy_times_to_print.shape)
+                    else:
+                        dummy_times_to_print = to_np(ts_)[0,:]
+                        z_all_to_print = to_np(z_)
+                    # if len(z_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                    #     z_to_print = z_to_print[None,:]
+                    # #     time_to_print = time_to_print[None,:]
+                        
+                    if obs_to_print.shape[2]<args.num_dim_plot: args.num_dim_plot=obs_to_print.shape[2]
+
+                    # plot_dim_vs_time(obs_to_print[0,:], time_to_print[0,:], z_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_train_ndim_epoch', epoch=epoch, args=args)
+                    plot_dim_vs_time(obs_to_print[0,:], time_to_print[0,:], z_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_train_ndim_epoch', epoch=epoch, args=args)
+                
+                    
+                    if args.integral_c is not None: # To pass a C# Now print 'c' 
+                        if args.integral_c == 'cte_2nd_half':
+                            obs_downsampled = obs_.detach().clone()
+                            t_downsample = ts_[0].detach().clone()
+                        obs_to_print = to_np(obs_downsampled)
+                        time_to_print = to_np(t_downsample)
+                        z_real_to_print = to_np(c(t_downsample))
+                        z_all_to_print = to_np(c(ts_[0,:].to(args.device)))
+                        if len(z_real_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                            z_real_to_print = z_real_to_print[None,:]
+                        # z_all_to_print = z_all_to_print[None,:]
+
+                        if verbose: 
+                            print('Plotting c')
+                            print('obs_to_print.shape: ',obs_to_print.shape)
+                            print('time_to_print.shape: ',time_to_print.shape)
+                            print('z_real_to_print.shape: ',z_real_to_print.shape)
+                            print('z_all_to_print.shape: ',z_all_to_print.shape)
+
+                        plot_dim_vs_time(obs_to_print[0,:], time_to_print, z_real_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_train_c_ndim_epoch', epoch=epoch, args=args)
+                    
+                    del obs_to_print, time_to_print, z_to_print
+            del obs_, ts_, z_
+            
+
+
+            ## Validating
+            model.eval()
+            with torch.no_grad():
+
+                #Only do this if there is a validation dataset
+                
+                val_loss = 0.0
+                counter = 0
+                if args.validation_split>0 and len(dataloaders['val'])>0: # If there are validation samples
+                    for obs_val, ts_val, ids_val, frames_to_drop_val in tqdm(dataloaders['val']):
+
+                        ids_val, indices = torch.sort(ids_val)
+                        # print('indices: ',indices)
+                        obs_val = obs_val[:,indices[0,:]]
+                        ts_val = ts_val[:, indices[0,:]]
+                
+                        obs_val = obs_val.to(args.device)
+                        ts_val = ts_val.to(args.device)
+                        ids_val = ids_val.to(args.device)
+                        del indices, ids_val
+
+                        if args.random_sample_n_points is not None:
+                            idx_downsampled_points = np.random.choice(np.arange(1,len(ts_val[0,:])), args.random_sample_n_points, replace=False)
+                            idx_downsampled_points = np.sort(np.insert(idx_downsampled_points, 0, 0))
+                            # # print('idx_downsampled_points.shape: ',idx_downsampled_points.shape)
+                            # idx_downsampled_points = np.arange(0,21,step=5)-1
+                            # idx_downsampled_points[0]=0
+                            obs_val=obs_val[:,idx_downsampled_points,:]
+                            ts_val=ts_val[:,idx_downsampled_points]
+
+                        # Drop frames if specified
+                        if args.randomly_drop_n_last_frames is not None or args.drop_n_last_frames is not None:
+                            frames_to_drop = frames_to_drop_val.numpy()[0]
+                            if verbose: print('frames_to_drop: ',frames_to_drop)
+                            obs_val_cropped = obs_val[:,:frames_to_drop,:]
+                            ts_val_cropped = ts_val[:,:frames_to_drop]
+                            if verbose: print('obs_cropped.shape: {}, ts_cropped.shape: {}'.format(obs_cropped.shape, ts_cropped.shape))
+                        else: frames_to_drop=None
+                        
+
+                        if args.integral_c is not None: # To pass a C
+                            if args.integral_c == 'cte_2nd_half': # In this case, all points of the first half are used. So no need for downsample
+                                interpolation = fun_interpolation(obs_val.to(args.device),ts_val.squeeze().to(args.device),verbose=False,  given_points = args.num_points_for_c) #Original 
+                                c = lambda x: interpolation.cte_2nd_half(x, c_scaling_factor=args.c_scaling_factor).to(args.device) #I am giving x, but it is not actually used
+                            else:
+                                downsample_idx = np.sort(np.random.choice(ts_val.shape[1], args.num_points_for_c, replace=False))
+                                downsample_idx = np.insert(downsample_idx, 0, 0)
+                                downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_val.shape[1]-1)
+                                if verbose: print('downsample_idx: ',downsample_idx)
+                                dup=np.array([0])
+                                while dup.size != 0:
+                                    u, c = np.unique(downsample_idx, return_counts=True)
+                                    dup = u[c > 1]
+                                    if dup.size != 0:
+                                        downsample_idx = np.sort(np.random.choice(ts_val.shape[1], args.num_points_for_c, replace=False))
+                                        downsample_idx = np.insert(downsample_idx, 0, 0)
+                                        downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_val.shape[1]-1)
+
+                                # if verbose: print('downsample_idx: ',downsample_idx)
+
+                                t_downsample = ts_val[0, downsample_idx]
+                                # if verbose:
+                                #     print('ts_: ',ts_)
+                                #     print('downsample_idx: ',downsample_idx)
+                                #     print('t_downsample: ',t_downsample)
+                                obs_downsampled = obs_val[:,downsample_idx,:]
+                                if verbose:
+                                    print('ts_val.shape: ',ts_val.shape)
+                                    print('downsample_idx: ',downsample_idx)
+                                    print('t_downsample.shape: ',t_downsample.shape)
+                                    print('t_downsample: ',t_downsample)
+                                    print('obs_downsampled.shape: ',obs_downsampled.shape)
+
+                                # interpolation = fun_interpolation(obs_downsampled.squeeze().to(args.device),t_downsample.squeeze().to(args.device),verbose=True) #Original 
+                                interpolation = fun_interpolation(obs_downsampled.to(args.device),t_downsample.squeeze().to(args.device),verbose=False) #Original 
+                                if args.integral_c == 'spline': # To pass a C as cubic spline
+                                    c = lambda x: interpolation.spline_interpolation(x).squeeze()
+                                elif args.integral_c == 'linear': # 
+                                    c = lambda x: interpolation.linear_interpolation(x).to(args.device)
+                                elif args.integral_c == 'step': # 
+                                    c = lambda x: interpolation.step_interpolation(x).to(args.device)
+
+                        elif args.integral_c is None:
+                            c=None
+                        
+                        
+                        
+                        
+                        if verbose: print('[in val] using Integral_attention_solver_multbatch')
+                        if args.support_tensors is False:
+                            z_val = Integral_attention_solver_multbatch(
+                                    # ts_val.to(device),
+                                    # obs_val[0].unsqueeze(0).to(args.device),
+                                    # sampling_points = ts_val.size(0),
+                                    ts_val[0].squeeze().to(device), # Because it has to be a 1D vector
+                                    obs_val[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                                    c=c,
+                                    sampling_points = ts_val[0].squeeze().size(0),
+                                    mask=mask,
+                                    Encoder = model,
+                                    max_iterations = args.max_iterations,
+                                    smoothing_factor=args.smoothing_factor,
+                                    #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                                    #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                                    use_support=False,
+                                    ).solve()
+                        else:
+                            z_val = Integral_attention_solver_multbatch(
+                                    # ts_val.to(device),
+                                    # obs_[0].unsqueeze(0).to(args.device),
+                                    # sampling_points = dummy_times.size(0),
+                                    # support_tensors=dummy_times.to(device),
+                                    ts_val[0].squeeze().to(device), # Because it has to be a 1D vector
+                                    obs_val[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                                    c=c,
+                                    # sampling_points = dummy_times.size(0),
+                                    sampling_points = dummy_times.squeeze().size(0),
+                                    support_tensors=dummy_times.squeeze().to(args.device),
+                                    mask=mask,
+                                    Encoder = model,
+                                    max_iterations = args.max_iterations,
+                                    smoothing_factor=args.smoothing_factor,
+                                    #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                                    #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                                    output_support_tensors=args.output_support_tensors
+                                    ).solve()
+
+                            if args.combine_points is True:
+                                z_val = z_val[:,real_idx,:]
+
+
+                        #validation_ts_ = get_times.select_times(ts_val)[1]
+                        if len(z_val.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                            z_val = z_val[None,:]
+                            if args.combine_points is True:
+                                z_clone =  z_clone[None,:] 
+                                
+                        if args.compute_loss_on_unseen_points:
+                            all_points = np.arange(ts_val.shape[1])
+                            unseen_points = np.argwhere(np.isin(all_points,downsample_idx,invert=True)).flatten() #returns the indexes of the dummy frames. So dummy_idxs and 
+                            all_points = all_points[unseen_points]
+                            if verbose: 
+                                print('\nselecting unseen points: ')
+                                print('downsample_idx: ',downsample_idx)
+                                print('np.arange(ts_.shape[1]): ',np.arange(ts_val.shape[1]))
+                                print('unseen_points: ',unseen_points)
+                                print('all_points: ',all_points)
+                            z_unseen = z_val[:,unseen_points,:]
+                            obs_unseen = obs_val[:,unseen_points,:]
+                            loss_validation = F.mse_loss(z_unseen, obs_unseen.detach()) #Original 
+                        else:
+                            loss_validation = F.mse_loss(z_val, obs_val.detach())
+                        # Val_Loss.append(to_np(loss_validation))
+
+
+                        counter += 1
+                        minibatch_val_counter+=1
+                        val_loss += loss_validation.item()
+                        del loss_validation
+                        
+                        # if args.log_per_minibatch and minibatch_val_counter%args.num_minibatches==0:
+                        #     tmp_loss = val_loss / counter
+                        #     writer.add_scalar('Minibatch/val_loss', tmp_loss, global_step=minibatch_val_counter)
+
+                            
+                    else: counter += 1
+
+                    val_loss /= counter
+                    all_val_loss.append(val_loss)
+
+                    #LRScheduler(loss_validation)
+                    if args.lr_scheduler == 'ReduceLROnPlateau':
+                        scheduler.step(val_loss)
+                    del val_loss
+
+                    if epoch % args.plot_freq == 0:
+                        # obs_val, ts_val, ids_val = obs_val.squeeze(), ts_val.squeeze(), ids_val.squeeze()
+                        obs_to_print = to_np(obs_val)
+                        time_to_print = to_np(ts_val)
+                        z_to_print = to_np(z_val)
+                        z_all_to_print = to_np(z_val)
+                        if args.support_tensors is True or args.support_test is True:
+                            dummy_times_to_print = to_np(dummy_times)
+                            if verbose: print('dummy_times_to_print.shape: ',dummy_times_to_print.shape)
+                        else:
+                            # dummy_times_to_print = to_np(ts_)[0,:]
+                            # z_all_to_print = to_np(z_)
+                            dummy_times = torch.linspace(0,1,1000)
+                            dummy_times_to_print = to_np(dummy_times)
+                            if verbose: print('dummy_times.shape: ',dummy_times.shape)
+
+                            if args.integral_c != 'cte_2nd_half' and args.integral_c is not None:
+                                z_all_to_print = Integral_attention_solver_multbatch(
+                                    # ts_val.to(device),
+                                    # obs_val[0].unsqueeze(0).to(args.device),
+                                    # sampling_points = ts_val.size(0),
+                                    dummy_times.squeeze().to(device), # Because it has to be a 1D vector
+                                    obs_val[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                                    c=c,
+                                    sampling_points = dummy_times.squeeze().size(0),
+                                    mask=mask,
+                                    Encoder = model,
+                                    max_iterations = args.max_iterations,
+                                    smoothing_factor=args.smoothing_factor,
+                                    #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                                    #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                                    use_support=False,
+                                    ).solve()
+                                z_all_to_print = to_np(z_all_to_print)
+                            elif args.integral_c == 'cte_2nd_half':
+                                dummy_times_to_print = time_to_print[0,:]
+                        # if len(z_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                        #     print('[before] z_to_print.shape: ',z_to_print.shape)
+                        #     z_to_print = z_to_print[None,:]
+
+                        # frames_to_drop=None
+                        # plot_dim_vs_time(obs_to_print[0,:], time_to_print[0,:], z_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_val_ndim_epoch', epoch=epoch, args=args)
+                        plot_dim_vs_time(obs_to_print[0,:], time_to_print[0,:], z_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_val_ndim_epoch', epoch=epoch, args=args)
+                            
+                        if args.integral_c is not None: # To pass a C# Now print 'c' 
+                            if args.integral_c == 'cte_2nd_half':
+                                obs_downsampled = obs_val.detach().clone()
+                                t_downsample = ts_val[0].detach().clone()
+                            obs_to_print = to_np(obs_downsampled)
+                            time_to_print = to_np(t_downsample)
+                            z_real_to_print = to_np(c(t_downsample))
+                            # z_all_to_print = to_np(c(ts_[0,:].to(args.device)))
+                            z_all_to_print = to_np(c(dummy_times.to(args.device)))
+                            if len(z_real_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                                z_real_to_print = z_real_to_print[None,:]
+                            # z_all_to_print = z_all_to_print[None,:]
+
+                            if verbose: 
+                                print('Plotting c')
+                                print('obs_to_print.shape: ',obs_to_print.shape)
+                                print('time_to_print.shape: ',time_to_print.shape)
+                                print('z_real_to_print.shape: ',z_real_to_print.shape)
+                                print('z_all_to_print.shape: ',z_all_to_print.shape)
+
+                            plot_dim_vs_time(obs_to_print[0,:], time_to_print, z_real_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_val_c_ndim_epoch', epoch=epoch, args=args)
+                    
+
+                        del z_to_print, time_to_print, obs_to_print
+                    del obs_val, ts_val, z_val
+                
+
+            # writer.add_scalar('train_loss', all_train_loss[-1], global_step=epoch)
+            # if len(all_val_loss)>0:
+            #     writer.add_scalar('val_loss', all_val_loss[-1], global_step=epoch)
+            # if args.lr_scheduler == 'ReduceLROnPlateau':
+            #     writer.add_scalar('Epoch/learning_rate', optimizer.param_groups[0]['lr'], global_step=epoch)
+            # elif args.lr_scheduler == 'CosineAnnealingLR':
+            #     writer.add_scalar('Epoch/learning_rate', scheduler.get_last_lr()[0], global_step=epoch)
+
+            end_i = time.time()
+
+            
+            model_state = {
+                        'epoch': epoch + 1,
+                        'state_dict': model.state_dict(),
+                        'optimizer' : optimizer.state_dict(),
+                        'scheduler': scheduler.state_dict(),
+                }
+
+
+            if args.validation_split>0:
+                save_best_model(path_to_save_models, all_val_loss[-1], epoch, model_state, model, None, None, None)
+            else: 
+                save_best_model(path_to_save_models, all_train_loss[-1], epoch, model_state, model, None, None, None)
+            save_last_model(path_to_save_models, all_train_loss[-1], epoch, model_state, None, None, None, None)
+
+            if len(all_val_loss)>0:
+                early_stopping(all_val_loss[-1])
+            else: 
+                early_stopping(all_train_loss[-1])
+                
+            if early_stopping.early_stop:
+                break
+
+        end = time.time()
+        
+    elif args.mode=='evaluate':
+        print('Running in evaluation mode')
+        verbose=False
+
+        # # Create a 'eval' folder to save things
+        # if verbose: print('path_to_experiment: ',path_to_experiment)
+        
+        path_to_save_plots = os.path.join(path_to_experiment,'eval_'+args.resume_from_checkpoint)
+        
+        if not os.path.exists(path_to_save_plots):
+            os.makedirs(path_to_save_plots)
+
+        if verbose: print('saving variables to: ',path_to_save_plots)
+        
+        with open(os.path.join(path_to_save_plots,'commandline_args.txt'), 'w') as f:
+            for key, value in args.__dict__.items(): 
+                f.write('%s:%s\n' % (key, value))
+        
+        ## Validating
+        model.eval()
+        with torch.no_grad():
+            # splitting_size = int(args.training_split*Data.size(0))
+            all_r2_scores = []
+            all_mse = []
+            batch_idx = 0
+            for obs_test, ts_test, ids_test, frames_to_drop_test in tqdm(dataloaders['val']):
+                # Dataset_all = Test_Dynamics_Dataset(Data[j,:,:],times)
+                # loader_test = torch.utils.data.DataLoader(Dataset_all, batch_size = len(np.copy(index_np)))
+                
+                ids_test, indices = torch.sort(ids_test)
+                # print('indices: ',indices)
+                obs_test = obs_test[:,indices[0,:]]
+                ts_test = ts_test[:, indices[0,:]]
+
+                obs_test = obs_test.to(args.device)
+                ts_test = ts_test.to(args.device)
+                # ids_val = ids_val.to(args.device)
+                del indices, ids_test
+
+                # Drop frames if specified
+                if args.randomly_drop_n_last_frames is not None or args.drop_n_last_frames is not None:
+                    frames_to_drop = frames_to_drop_test.numpy()[0]
+                    if verbose: print('frames_to_drop: ',frames_to_drop)
+                    # obs_val_cropped = obs_test[:,:frames_to_drop,:]
+                    # ts_val_cropped = ts_test[:,:frames_to_drop]
+                    # if verbose: print('obs_cropped.shape: {}, ts_cropped.shape: {}'.format(obs_cropped.shape, ts_cropped.shape))
+                else: frames_to_drop=None
+                
+                if verbose: 
+                    print('ts_test: ',ts_test)
+                    print('times: ',times)
+                
+                if args.support_tensors is True or args.support_test is True:
+                    if args.combine_points is True:
+                        sampled_tensors,real_idx = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(0, 1).float())
+                        if verbose: 
+                            print('real_idx: ',real_idx)
+                            print('sampled_tensors: ',sampled_tensors)
+                            print('sampled_tensors.type(): ',sampled_tensors.type())
+                        #Check if there are duplicates and resample if there are
+                        sampled_tensors = torch.cat([times,sampled_tensors])
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(sampled_tensors, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                sampled_tensors,real_idx = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(0, 1).float())
+                                sampled_tensors  = torch.cat([times,sampled_tensors])
+                        dummy_times=sampled_tensors.float()
+                        real_idx=real_idx[:times.size(0)]
+                    else:
+                        # dummy_times = torch.linspace(times[0],times[-1],args.sampling_points).float()
+                        #Add in-between frames
+                        dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_test.squeeze()[0], ts_test.squeeze()[-1]))
+                        dummy_times,_ = torch.sort(torch.cat((ts_test.squeeze().cpu(),dummy_times))) # append the in-between and sort
+
+                        #Check if there are duplicates and resample if there are
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(dummy_times, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                print('[sampling_full_frames] There are duplicated time coordinates: ',dup)
+                                print('Resampling')
+
+                                 #Add in-between frames
+                                dummy_times,_ = torch.sort(torch.FloatTensor(args.sampling_points).uniform_(ts_test.squeeze()[0], ts_test.squeeze()[-1]))
+                                dummy_times,_ = torch.sort(torch.cat((ts_test.squeeze().cpu(),dummy_times))) # append the in-between and sort
+
+                    if verbose: 
+                        print('dummy_times.type(): ',dummy_times.type())
+                        print('dummy_times.shape: ',dummy_times.shape)
+                
+                if args.integral_c is not None: # To pass a C
+                    if args.integral_c == 'cte_2nd_half': # In this case, all points of the first half are used. So no need for downsample
+                        interpolation = fun_interpolation(obs_test.to(args.device),ts_test.squeeze().to(args.device),verbose=False,  given_points = args.num_points_for_c) #Original 
+                        c = lambda x: interpolation.cte_2nd_half(x, c_scaling_factor=args.c_scaling_factor).to(args.device) #I am giving x, but it is not actually used
+                    else:
+                        #Downsample to 1/3 of the points, randomly 
+                        downsample_idx = np.sort(np.random.choice(ts_test.shape[1], args.num_points_for_c, replace=False))
+                        downsample_idx = np.insert(downsample_idx, 0, 0)
+                        downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_test.shape[1]-1)
+                        if verbose: print('downsample_idx: ',downsample_idx)
+                        dup=np.array([0])
+                        while dup.size != 0:
+                            u, c = np.unique(downsample_idx, return_counts=True)
+                            dup = u[c > 1]
+                            if dup.size != 0:
+                                downsample_idx = np.sort(np.random.choice(ts_test.shape[1], args.num_points_for_c, replace=False))
+                                downsample_idx = np.insert(downsample_idx, 0, 0)
+                                downsample_idx = np.insert(downsample_idx, len(downsample_idx), ts_test.shape[1]-1)
+
+                        # if verbose: print('downsample_idx: ',downsample_idx)
+
+                        t_downsample = ts_test[0, downsample_idx]
+                        # if verbose:
+                        #     print('ts_: ',ts_)
+                        #     print('downsample_idx: ',downsample_idx)
+                        #     print('t_downsample: ',t_downsample)
+                        obs_downsampled = obs_test[:,downsample_idx,:]
+                        if verbose:
+                            print('ts_test: ',ts_test)
+                            print('downsample_idx: ',downsample_idx)
+                            print('t_downsample.shape: ',t_downsample.shape)
+                            print('t_downsample: ',t_downsample)
+                            print('obs_downsampled.shape: ',obs_downsampled.shape)
+
+                        # interpolation = fun_interpolation(obs_downsampled.squeeze().to(args.device),t_downsample.squeeze().to(args.device),verbose=True) #Original 
+                        interpolation = fun_interpolation(obs_downsampled.to(args.device),t_downsample.squeeze().to(args.device),verbose=False) #Original 
+                        if args.integral_c == 'spline': # To pass a C as cubic spline
+                            c = lambda x: interpolation.spline_interpolation(x).squeeze()
+                        elif args.integral_c == 'linear': # 
+                            c = lambda x: interpolation.linear_interpolation(x).to(args.device)
+                        elif args.integral_c == 'step': # 
+                            c = lambda x: interpolation.step_interpolation(x).to(args.device)
+                        
+                elif args.integral_c is None:
+                    c=None
+
+                if verbose: print('[in val] using Integral_attention_solver_multbatch')
+                if args.support_tensors is False:
+                    z_test = Integral_attention_solver_multbatch(
+                            # ts_val.to(device),
+                            # obs_val[0].unsqueeze(0).to(args.device),
+                            # sampling_points = ts_val.size(0),
+                            ts_test[0].squeeze().to(device), # Because it has to be a 1D vector
+                            obs_test[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                            c=c,
+                            sampling_points = ts_test[0].squeeze().size(0),
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            smoothing_factor=args.smoothing_factor,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            use_support=False,
+                            ).solve()
+                else:
+                    z_test = Integral_attention_solver_multbatch(
+                            # ts_val.to(device),
+                            # obs_[0].unsqueeze(0).to(args.device),
+                            # sampling_points = dummy_times.size(0),
+                            # support_tensors=dummy_times.to(device),
+                            ts_test[0].squeeze().to(device), # Because it has to be a 1D vector
+                            obs_test[:,0,:].unsqueeze(1).to(args.device), # This should should the first point for each curve in the batch. For the multbatch [num_batch, 1 time point, num_dim]. For single batch [1 time point,num_dim]
+                            c=c,
+                            # sampling_points = dummy_times.size(0),
+                            sampling_points = dummy_times.squeeze().size(0),
+                            support_tensors=dummy_times.squeeze().to(args.device),
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            smoothing_factor=args.smoothing_factor,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            output_support_tensors=args.output_support_tensors
+                            ).solve()
+
+                if args.combine_points is True:
+                    z_test = z_test[:,real_idx,:]
+
+
+                        # if args.combine_points is True:
+                        #     z_val = z_val[real_idx,:]
+                
+                # z_p = z_test#model(obs[0],new_times, return_whole_sequence=True)
+                if len(z_test.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                    z_test = z_test[None,:]
+                    
+                obs_to_print = to_np(obs_test)
+                time_to_print = to_np(ts_test)
+                if args.support_tensors is True or args.support_test is True:
+                    dummy_times_to_print = to_np(dummy_times)
+                    if verbose: print('dummy_times_to_print.shape: ',dummy_times_to_print.shape)
+                else: 
+                    dummy_times = ts_test[0,:].clone().cpu()
+                    # dummy_times = torch.linspace(0,1,1000)
+                    dummy_times_to_print = to_np(dummy_times)
+                    if verbose: print('dummy_times_to_print.shape: ',dummy_times_to_print.shape)
+                    
+                real_idx = np.argwhere(np.isin(dummy_times,ts_test[0,:].cpu(),invert=False)).flatten() #returns the indexes of the dummy frames. So dummy_idxs and 
+                if verbose: 
+                    print('real_idx: ',real_idx)
+                    print('time_to_print: ',time_to_print)
+                    print('dummy_times: ',dummy_times)
+                z_real_to_print = to_np(z_test[:,real_idx,:])
+                z_all_to_print = to_np(z_test)
+                
+                if verbose: 
+                    print('real_idx: ',real_idx)
+                    print('obs_to_print.shape: ',obs_to_print.shape)
+                    print('time_to_print.shape: ',time_to_print.shape)
+                    print('z_real_to_print.shape: ',z_real_to_print.shape)
+                    print('z_all_to_print.shape: ',z_all_to_print.shape)
+                # if len(z_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                #     print('[before] z_to_print.shape: ',z_to_print.shape)
+                #     z_to_print = z_to_print[None,:]
+
+                # frames_to_drop=None
+                # path_to_save_plots= None
+                epoch=None
+                if obs_to_print.shape[2]<args.num_dim_plot: args.num_dim_plot=obs_to_print.shape[2]
+
+                plot_dim_vs_time(obs_to_print[0,:], time_to_print[0,:], z_real_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_test_ndim_epoch', epoch=batch_idx, args=args)
+
+                #make dict with variables to be saved
+                outputs_to_save = {
+                        'batch_idx': batch_idx ,
+                        'obs_to_print': obs_to_print[0,:],
+                        'time_to_print' : time_to_print[0,:],
+                        'dummy_times_to_print' : dummy_times_to_print,
+                        'z_all_to_print' : z_all_to_print[0,:],
+                        'frames_to_drop' : frames_to_drop,
+                }
+                torch.save(outputs_to_save, os.path.join(path_to_save_plots,'output_batch_' + str(batch_idx) + '.pt'))
+                
+                if args.integral_c is not None: # To pass a C# Now print 'c' 
+                    if args.integral_c == 'cte_2nd_half' or args.integral_c == 'cte_2nd_half_shifted':
+                        obs_downsampled = obs_test.detach().clone()
+                        t_downsample = ts_test[0].detach().clone()
+                    obs_to_print = to_np(obs_downsampled)
+                    time_to_print = to_np(t_downsample)
+                    z_real_to_print = to_np(c(t_downsample))
+                    
+                    # dummy_times = torch.linspace(0,1,1000)
+                    # dummy_times_to_print = to_np(dummy_times)
+                    
+                    z_all_to_print = to_np(c(dummy_times.to(args.device)))
+                    if len(z_real_to_print.shape)<3: #because if it is single curve per batch, this won't return the batch=1 dimension.
+                        z_real_to_print = z_real_to_print[None,:]
+                        z_all_to_print = z_all_to_print[None,:]
+
+                    if verbose: 
+                        print('Plotting c')
+                        print('obs_to_print.shape: ',obs_to_print.shape)
+                        print('time_to_print.shape: ',time_to_print.shape)
+                        print('z_real_to_print.shape: ',z_real_to_print.shape)
+                        print('z_all_to_print.shape: ',z_all_to_print.shape)
+
+                    plot_dim_vs_time(obs_to_print[0,:], time_to_print, z_real_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:], frames_to_drop, path_to_save_plots, name='plot_c_ndim_batch', epoch=batch_idx, args=args)
+                batch_idx+=1                
                                                                  
 def Full_experiment_AttentionalIE_PDE_Brain(model, Encoder, Decoder, Data, time_seq, index_np, mask, times, args, extrapolation_points): # experiment_name, plot_freq=1):
     # scaling_factor=1
