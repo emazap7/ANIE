@@ -15,7 +15,7 @@ from torchcubicspline import(natural_cubic_spline_coeffs,
                              NaturalCubicSpline)
 
 #Custom libraries
-from IE_source.utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, Integral_part, LRScheduler, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset, fun_interpolation
+from IE_source.utils import Select_times_function, EarlyStopping, SaveBestModel, to_np, Integral_part, LRScheduler, load_checkpoint, Train_val_split, Dynamics_Dataset, Test_Dynamics_Dataset, fun_interpolation, plot_dim_vs_time
 from torch.utils.data import SubsetRandomSampler
 from IE_source.solver import IESolver_monoidal
 from IE_source.Attentional_IE_solver import Integral_attention_solver, Integral_attention_solver_multbatch, Integral_spatial_attention_solver_multbatch #, Integral_spatial_attention_solver
