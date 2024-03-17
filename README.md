@@ -1,4 +1,4 @@
-# Neural_IDE
+# ANIE
 
 Pytorch implementation of the Attentional Neural Integral Equations (ANIE)
 
