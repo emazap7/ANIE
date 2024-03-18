@@ -731,7 +731,7 @@ class Integral_part():
     
 def plot_dim_vs_time(obs_to_print, time_to_print, z_to_print, dummy_times_to_print, z_all_to_print, frames_to_drop, path_to_save_plots, name, epoch, args):
     # obs_to_print[0,:], time_to_print[0,:], z_real_to_print[0,:], dummy_times_to_print, z_all_to_print[0,:]
-    verbose=True
+    verbose=False
     # obs_ = obs_[:-frames_to_drop]
     # ts_ = ts_[:-frames_to_drop]
     if verbose: 

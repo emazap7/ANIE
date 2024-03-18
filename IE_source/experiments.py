@@ -7180,7 +7180,7 @@ def Full_experiment_AttentionalIE_GeneratedFMRI(model, Data, dataloaders, time_s
                 save_best_model(path_to_save_models, all_val_loss[-1], epoch, model_state, model, None, None, None)
             else: 
                 save_best_model(path_to_save_models, all_train_loss[-1], epoch, model_state, model, None, None, None)
-            save_last_model(path_to_save_models, all_train_loss[-1], epoch, model_state, None, None, None, None)
+            # save_last_model(path_to_save_models, all_train_loss[-1], epoch, model_state, None, None, None, None)
 
             if len(all_val_loss)>0:
                 early_stopping(all_val_loss[-1])
