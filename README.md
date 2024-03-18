@@ -43,7 +43,7 @@ If the `environment.yml` file does not successfully recreate the environment for
 
 1. Create and activate an anaconda environment with Python version 3.10:
 ```
-conda create -n neural_ide python=3.10
+conda create -n anie python=3.10
 conda activate anie
 ```
 
