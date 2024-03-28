@@ -21,7 +21,7 @@ conda activate anie
 ```
 
 
-If you use NIDE or any part of it in your own work, please cite [Zappala et al](https://arxiv.org/abs/2209.15190):
+Citation [Zappala et al](https://arxiv.org/abs/2209.15190):
 ```
 @article{zappala2022neural,
   title={Neural integral equations},
