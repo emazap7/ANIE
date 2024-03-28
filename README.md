@@ -1,6 +1,8 @@
 # ANIE
 
-Pytorch implementation of the Attentional Neural Integral Equations (ANIE)
+Pytorch implementation of the Attentional Neural Integral Equations (ANIE): 
+arXiv:2209.15190
+https://arxiv.org/abs/2209.15190.
 
 
 # Quickstart
