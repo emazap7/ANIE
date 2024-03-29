@@ -31,6 +31,9 @@ Citation [Zappala et al](https://arxiv.org/abs/2209.15190):
 }
 ```
 
+## Structure of the code
+The main code is all located in the folder 'IE_source'. The file 'Attentional_IE_solver.py' contains the integral equation solver that uses attention for quadrature of the integrals. The file 'Galerkin_transformer.py' contains the transformer without softamx, which we modified from https://github.com/scaomath/galerkin-transformer, and it is called inside the solver for the quadrature/cubature. The file 'experiments' contains all codes for the experiments in the article. The functions to run the experiments are called in the jupyter notebooks. The file 'integrators' contains helper functions to perform integration (regular) for the integral equation solver that does not use attention. The file 'kernels' contains useful functions to produce integral equation datasets. The file 'solver.py' contains the implementation of the integral equation solver without attention (so, regular integration). In 'utils.py' some helper functions such as for saving the models, loading them etc., are found.  
+
 # Datasets
 
 ## Toy data 
@@ -62,8 +65,6 @@ conda activate anie
 7. Install `conda install -c conda-forge tqdm`
 
 8. Install `conda install -c anaconda scikit-learn`
-
-
 
 
 
