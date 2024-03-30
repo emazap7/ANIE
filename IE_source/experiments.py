@@ -4239,51 +4239,13 @@ def Full_experiment_AttentionalIE_PDE(model, Encoder, Decoder, Data, time_seq, i
                 else:
                     times_integration = args.ts_integration.to(args.device)
                 
-                if args.support_tensors is False:
-                    if args.n_batch==1:
-                        z_ = Integral_spatial_attention_solver(
-                                torch.linspace(0,1,args.time_points).to(device),
-                                obs_[0].unsqueeze(1).to(args.device),
-                                c=c,
-                                sampling_points = args.time_points,
-                                mask=mask,
-                                Encoder = model,
-                                max_iterations = args.max_iterations,
-                                spatial_integration=True,
-                                spatial_domain= torch.linspace(0,1,args.n_points).to(device),
-                                spatial_domain_dim=1,
-                                #lower_bound = lambda x: torch.Tensor([0]).to(device),
-                                #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
-                                smoothing_factor=args.smoothing_factor,
-                                use_support=False,
-                                ).solve()
-                    else:
-                        z_ = Integral_spatial_attention_solver_multbatch(
-                                times_integration,
-                                y_0.to(args.device),
-                                c=c,
-                                sampling_points = args.time_points,
-                                mask=mask,
-                                Encoder = model,
-                                max_iterations = args.max_iterations,
-                                spatial_integration=True,
-                                spatial_domain= torch.meshgrid(\
-                                                [torch.linspace(0,1,args.n_points) for i in range(1)])[0]\
-                                                .unsqueeze(-1).to(device),
-                                spatial_domain_dim=1,
-                                #lower_bound = lambda x: torch.Tensor([0]).to(device),
-                                #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
-                                smoothing_factor=args.smoothing_factor,
-                                use_support=False,
-                                accumulate_grads=True
-                                ).solve()
-                else:
+                
+                if args.n_batch==1:
                     z_ = Integral_spatial_attention_solver(
                             torch.linspace(0,1,args.time_points).to(device),
-                            y_0.to(args.device),
+                            obs_[0].unsqueeze(1).to(args.device),
                             c=c,
                             sampling_points = args.time_points,
-                            support_tensors=dummy_times.to(device),
                             mask=mask,
                             Encoder = model,
                             max_iterations = args.max_iterations,
@@ -4293,10 +4255,28 @@ def Full_experiment_AttentionalIE_PDE(model, Encoder, Decoder, Data, time_seq, i
                             #lower_bound = lambda x: torch.Tensor([0]).to(device),
                             #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
                             smoothing_factor=args.smoothing_factor,
-                            output_support_tensors=True
+                            use_support=False,
                             ).solve()
-                    if args.combine_points is True:
-                        z_ = z_[real_idx,:]
+                else:
+                    z_ = Integral_spatial_attention_solver_multbatch(
+                            times_integration,
+                            y_0.to(args.device),
+                            c=c,
+                            sampling_points = args.time_points,
+                            mask=mask,
+                            Encoder = model,
+                            max_iterations = args.max_iterations,
+                            spatial_integration=True,
+                            spatial_domain= torch.meshgrid(\
+                                            [torch.linspace(0,1,args.n_points) for i in range(1)])[0]\
+                                            .unsqueeze(-1).to(device),
+                            spatial_domain_dim=1,
+                            #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                            #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                            smoothing_factor=args.smoothing_factor,
+                            use_support=args.support_tensors,
+                            accumulate_grads=True
+                            ).solve()
                         
                 if Encoder is None:
                     z_ = z_.view(args.n_batch,args.n_points,args.time_points)
@@ -4434,63 +4414,41 @@ def Full_experiment_AttentionalIE_PDE(model, Encoder, Decoder, Data, time_seq, i
                         else:
                             times_integration = args.ts_integration.to(args.device)
                             
-                        if args.support_tensors is False:
-                            if args.n_batch==1:
-                                z_val = Integral_spatial_attention_solver(
-                                        torch.linspace(0,1,args.time_points).to(device),
-                                        obs_val[0].unsqueeze(1).to(args.device),
-                                        c=c,
-                                        sampling_points = args.time_points,
-                                        mask=mask,
-                                        Encoder = model,
-                                        max_iterations = args.max_iterations,
-                                        spatial_integration=True,
-                                        spatial_domain= torch.linspace(0,1,args.n_points).to(device),
-                                        spatial_domain_dim=1,
-                                        smoothing_factor=args.smoothing_factor,
-                                        use_support=False,
-                                        ).solve()
-                            else:
-                                z_val = Integral_spatial_attention_solver_multbatch(
-                                    times_integration,
-                                    y_0.to(args.device),
-                                    c=c,
-                                    sampling_points = args.time_points,
-                                    mask=mask,
-                                    Encoder = model,
-                                    max_iterations = args.max_iterations,
-                                    spatial_integration=True,
-                                    spatial_domain= torch.meshgrid(\
-                                                [torch.linspace(0,1,args.n_points) for i in range(1)])[0]\
-                                                .unsqueeze(-1).to(device),
-                                    spatial_domain_dim=1,
-                                    #lower_bound = lambda x: torch.Tensor([0]).to(device),
-                                    #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
-                                    smoothing_factor=args.smoothing_factor,
-                                    use_support=False,
-                                    ).solve()
-                                
-                        else:
+                        
+                        if args.n_batch==1:
                             z_val = Integral_spatial_attention_solver(
                                     torch.linspace(0,1,args.time_points).to(device),
-                                    obs_[0].unsqueeze(1).to(args.device),
+                                    obs_val[0].unsqueeze(1).to(args.device),
                                     c=c,
                                     sampling_points = args.time_points,
-                                    support_tensors=dummy_times.to(device),
                                     mask=mask,
                                     Encoder = model,
                                     max_iterations = args.max_iterations,
                                     spatial_integration=True,
                                     spatial_domain= torch.linspace(0,1,args.n_points).to(device),
                                     spatial_domain_dim=1,
-                                    #lower_bound = lambda x: torch.Tensor([0]).to(device),
-                                    #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
                                     smoothing_factor=args.smoothing_factor,
-                                    output_support_tensors=True
+                                    use_support=False,
                                     ).solve()
-                        
-                            if args.combine_points is True:
-                                z_val = z_val[real_idx,:]
+                        else:
+                            z_val = Integral_spatial_attention_solver_multbatch(
+                                times_integration,
+                                y_0.to(args.device),
+                                c=c,
+                                sampling_points = args.time_points,
+                                mask=mask,
+                                Encoder = model,
+                                max_iterations = args.max_iterations,
+                                spatial_integration=True,
+                                spatial_domain= torch.meshgrid(\
+                                            [torch.linspace(0,1,args.n_points) for i in range(1)])[0]\
+                                            .unsqueeze(-1).to(device),
+                                spatial_domain_dim=1,
+                                #lower_bound = lambda x: torch.Tensor([0]).to(device),
+                                #upper_bound = lambda x: x,#torch.Tensor([1]).to(device),
+                                smoothing_factor=args.smoothing_factor,
+                                use_support=args.support_tensors,
+                                ).solve()
                         
                         if Encoder is None:  
                             z_val = z_val.view(args.n_batch,args.n_points,args.time_points)
