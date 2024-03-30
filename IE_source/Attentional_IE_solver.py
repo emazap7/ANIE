@@ -1170,7 +1170,7 @@ class Integral_spatial_attention_solver_multbatch:
                 
                 if self.use_support is True:
                     time = torch.sort(torch.rand(self.samp-2,1),0)[0].to(device)*(self.x[-1]-self.x[0]) + self.x[0]
-                    time= torch.cat([self.x[:1].unsqueeze(-1),time,self.x[-1:].unsqueeze(-1)],0).unsqueeze(0)
+                    time= torch.cat([self.x[:1].unsqueeze(-1),time,self.x[-1:].unsqueeze(-1)],0).unsqueeze(0).to(device)
                     interpolated_y = self._interpolate_y(y)
                     y_ = interpolated_y(time.view(self.samp)) 
                 else:
@@ -1246,7 +1246,7 @@ class Integral_spatial_attention_solver_multbatch:
         if self.spatial_integration is False:
             x=self.support_tensors
         else:
-            x = torch.linspace(self.x[0],self.x[-1],self.samp)
+            x = torch.linspace(self.x[0],self.x[-1],self.samp).to(device)
         y = y
         coeffs = natural_cubic_spline_coeffs(x, y)
         interpolation = NaturalCubicSpline(coeffs)
