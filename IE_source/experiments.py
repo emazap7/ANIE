@@ -4986,10 +4986,10 @@ def Full_experiment_AttentionalIE_PDE(model, Encoder, Decoder, Data, time_seq, i
                 #plt.figure(figsize=(8,8),facecolor='w')
 
                 z_p = z_test
-                z_p = to_np(z_p)
+                z_p = to_np(z_p)[:,:,1:]
 
                 
-                obs_print = to_np(obs_test[:,:,:])
+                obs_print = to_np(obs_test[:,:,1:])
 
                 if args.plot_eval is True:
                     for i in range(args.n_batch):
