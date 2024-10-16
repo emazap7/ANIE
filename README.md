@@ -42,7 +42,7 @@ The folder DeepONet+UNet contains our implementation of one of the models used f
 The toy data has been obtained by solving analytical IDEs in 2D and 4Ds. The kernels
 used in both cases were convolutional kernels where the entries were given by combinations of trigonometric functions. The F function was a hyperbolic cosine. To obtain the datasets, we have randomly sampled initial conditions and solved the corresponding initial value problem for the IDEs, using our implementation of the IDE solver. The integrals have been performed with Monte-Carlo integration with 1K sampled points per interval, and the number of iterations used was set to 10, which was empirically seen to guarantee convergence to the solution.
 
-The scripts for the toy data generation can be found at [here](https://arxiv.org/abs/2209.15190).
+The scripts for the toy data generation can be found [here](https://arxiv.org/abs/2209.15190).
 
 
 # Manual Environment Creation
