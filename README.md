@@ -3,6 +3,8 @@
 Pytorch implementation of the Attentional Neural Integral Equations (ANIE): 
 arXiv:2209.15190
 https://arxiv.org/abs/2209.15190.
+Published version in Nature Machine Intelligence as "Learning Integral Operators via Neural Integral Equations":
+https://www.nature.com/articles/s42256-024-00886-8.
 
 
 # Quickstart
@@ -21,13 +23,15 @@ conda activate anie
 ```
 
 
-Citation [Zappala et al](https://arxiv.org/abs/2209.15190):
+Citation [Zappala et al](https://www.nature.com/articles/s42256-024-00886-8):
 ```
-@article{zappala2022neural,
-  title={Neural integral equations},
-  author={Zappala, Emanuele and Fonseca, Antonio Henrique de Oliveira and Caro, Josue Ortega and van Dijk, David},
-  journal={arXiv preprint arXiv:2209.15190},
-  year={2022}
+@article{zappala2024learning,
+  title={Learning integral operators via neural integral equations},
+  author={Zappala, Emanuele and Fonseca, Antonio Henrique de Oliveira and Caro, Josue Ortega and Moberly, Andrew Henry and Higley, Michael James and Cardin, Jessica and Dijk, David van},
+  journal={Nature Machine Intelligence},
+  pages={1--17},
+  year={2024},
+  publisher={Nature Publishing Group UK London}
 }
 ```
 
